@@ -5,45 +5,12 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from torch.nn.utils import weight_norm
-
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
 except ImportError:
     print("Better speed can be achieved with apex installed from https://www.github.com/nvidia/apex.")
     from torch.nn import LayerNorm
-
-
-class FrozenDropout(nn.Module):
-    def __init__(self, p=0):
-        super().__init__()
-
-        if p < 0 or p >= 1:
-            raise ValueError(f'Wrong parameter: expected 0 <= p < 1, got {p}')
-
-        self.p = p
-        self.freeze_flag = False
-        self.cached_mask = None
-
-    def forward(self, x):
-        if not self.training or self.p == 0:
-            return x
-
-        if self.freeze_flag and self.cached_mask is not None:
-            return x * self.cached_mask
-
-        mask = torch.empty_like(x).bernoulli_(1 - self.p).mul_(1 - self.p)
-
-        if self.freeze_flag:
-            self.cached_mask = mask
-
-        return x * mask
-
-    def freeze(self, freeze_flag):
-        if self.freeze_flag != freeze_flag:
-            self.cached_mask = None
-            self.freeze_flag = freeze_flag
 
 
 class ConstantPositionalEmbedding(nn.Module):
