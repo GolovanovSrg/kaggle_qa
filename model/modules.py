@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from torch.nn.utils import weight_norm
+
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
@@ -343,16 +345,45 @@ class Transformer(nn.Module):
         self.layers = nn.ModuleList([copy.deepcopy(base_block) for _ in range(n_layers)])
         self.final_norm = LayerNorm(embedding_dim)
 
-        self.adapters_mode = adapters_mode
-
     def forward(self, x, emb_noise=None):
         x, padding_mask = self.embedding(x)
         if emb_noise is not None:
             x = x + emb_noise
         x = self.embedding_dropout(x)
-        
+
         for layer in self.layers:
             x, _ = layer(x, padding_mask)
         x = self.final_norm(x)
 
         return x, padding_mask
+
+
+class DistanceLayer(nn.Module):
+    def __init__(self, in_features, out_features, middle_feature=None, n_centers=1):
+        super().__init__()
+
+        if middle_feature is None:
+            middle_feature = in_features
+
+        self.proj = nn.Sequential(nn.Linear(in_features, middle_feature),
+                                  nn.BatchNorm1d(middle_feature),
+                                  nn.CELU(inplace=True),
+                                  nn.Linear(middle_feature, middle_feature),
+                                  nn.BatchNorm1d(middle_feature))
+        self.clusters = nn.Parameter(torch.Tensor(n_centers * out_features, middle_feature))
+        self.pooling = nn.MaxPool1d(kernel_size=n_centers, stride=n_centers)
+        self.register_buffer('scale', torch.tensor(math.sqrt(2) * math.log(out_features - 1)))
+
+        self._init_weights()
+
+    def _init_weights(self):
+        nn.init.normal_(self.proj[0].weight, std=0.02)
+        nn.init.normal_(self.proj[3].weight, std=0.02)
+        nn.init.normal_(self.clusters)
+
+    def forward(self, x):
+        x = self.proj(x)
+        x = F.linear(F.normalize(x, dim=-1), F.normalize(self.clusters, dim=-1))
+        x = self.scale * x
+
+        return x
