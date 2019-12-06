@@ -1,5 +1,6 @@
 import random
 
+import torch
 from torch.utils.data import Dataset
 
 
@@ -94,8 +95,12 @@ class GUESTDataset(Dataset):
         features = [self._make_feature(name, idx) for name in self.feature_names()]
         if self._shuffle_parts:
             random.shuffle(features)
-        
-        tokens = sum(features, [])[:self._max_positions - 1] + [self._vocab.eos_id]
+
+        tokens = sum(features, [])
+        if len(tokens) >= self._max_positions:
+            print(f'Trimmed input with length {len(tokens)}')
+
+        tokens = tokens[:self._max_positions - 1] + [self._vocab.eos_id]
         targets = [self._make_target(name, idx) for name in self.target_names()]
 
         tokens = torch.tensor(tokens, dtype=torch.long)
