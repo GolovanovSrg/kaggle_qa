@@ -46,7 +46,7 @@ class LabelSmoothingLoss(nn.Module):
             self.criterion = nn.NLLLoss(reduction=reduction, ignore_index=ignore_index)
 
     def forward(self, inputs, targets):
-        log_inputs = log_sigsoftmax(inputs)
+        log_inputs = F.log_softmax(inputs, dim=-1)
         if self.confidence < 1:
             tdata = targets.data
             tmp = self.one_hot.repeat(targets.shape[0], 1)
@@ -182,7 +182,7 @@ class VATLoss(nn.Module):
             d.requires_grad_()
             pred_hat, _ = model(x, self.eps * d)
             adv_distance = cross_entropy_with_logits(pred_hat, logits)
-            grad = torch.autograd.grad(adv_distance, [d], retain_graph=False)[0]
+            grad = torch.autograd.grad(adv_distance, [d], retain_graph=True)[0]
             d = self._l2_normalize(grad.detach() * mask)
 
         pred_hat, _ = model(x, self.eps * d)

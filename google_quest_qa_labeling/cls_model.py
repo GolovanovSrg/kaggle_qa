@@ -41,10 +41,9 @@ class ClassificationModel(nn.Module):
                                    future_mask=future_mask,
                                    adapters_mode=adapters_mode)
 
-        # TODO: add more layers
-        self.proj = nn.Linear(embedding_dim, n_outputs * n_classes)
+        self.proj = nn.Linear(embedding_dim, n_outputs * cls_embedding_dim)
         # TODO: don't share classes
-        self.dist = DistanceLayer(embedding_dim, n_classes,
+        self.dist = DistanceLayer(cls_embedding_dim, n_classes,
                                   middle_feature=cls_embedding_dim,
                                   n_centers=n_centers)
 
@@ -88,7 +87,7 @@ class ClassificationModel(nn.Module):
         lengths = (~padding_mask).long().sum(dim=-1)
         lengths = lengths.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[-1])
         cls_x = x.gather(1, lengths-1).squeeze(1)
-        cls_x = self.proj(cls_x).reshape(-1, self.n_outputs, self.n_classes)
+        cls_x = self.proj(cls_x).reshape(-1, self.n_outputs, self.cls_embedding_dim)
         cls_output = self.dist(cls_x)
         lm_output = F.linear(x, self.encoder.embedding.tok_embedding.weight)
 

@@ -19,18 +19,18 @@ SPECIAL_TOKENS = {'pad': '<pad>',
 
 class GUESTDataset(Dataset):
     @staticmethod
-    def assessor_values():
-        return [i / 18 for i in range(19)]
+    def assessor_values(n_bins=19):
+        return [(i, i / (n_bins-1)) for i in range(n_bins)]
 
     @staticmethod
     def feature_names():
-        return ('question_title',
+        return ['question_title',
                 'question_body',
-                'answer')
+                'answer']
 
     @staticmethod
     def target_names():
-        return ('question_asker_intent_understanding',
+        return ['question_asker_intent_understanding',
                 'question_body_critical',
                 'question_conversational',
                 'question_expect_short_answer',
@@ -59,7 +59,7 @@ class GUESTDataset(Dataset):
                 'answer_type_instructions',
                 'answer_type_procedure',
                 'answer_type_reason_explanation',
-                'answer_well_written')
+                'answer_well_written']
 
     def __init__(self, data, vocab, bpe_dropout=0, shuffle_parts=False, max_positions=1024):
         super().__init__()
@@ -89,7 +89,7 @@ class GUESTDataset(Dataset):
         return self._data.iloc[idx][name]
 
     def __len__(self):
-        return len(self.data)
+        return len(self._data)
 
     def __getitem__(self, idx):
         features = [self._make_feature(name, idx) for name in self.feature_names()]
@@ -97,8 +97,8 @@ class GUESTDataset(Dataset):
             random.shuffle(features)
 
         tokens = sum(features, [])
-        if len(tokens) >= self._max_positions:
-            print(f'Trimmed input with length {len(tokens)}')
+        #if len(tokens) >= self._max_positions:
+        #    print(f'Trimmed input with length {len(tokens)}')
 
         tokens = tokens[:self._max_positions - 1] + [self._vocab.eos_id]
         targets = [self._make_target(name, idx) for name in self.target_names()]
@@ -110,10 +110,8 @@ class GUESTDataset(Dataset):
 
 
 def read_data(data_path, test_size=0, seed=0):
-    def mapper(value, eps=1e-8):
-        for i, assessor_value in enumerate(GUESTDataset.assessor_values()):
-            if abs(assessor_value - value) <= eps:
-                return i
+    def mapper(value):
+        return min(GUESTDataset.assessor_values(), key=lambda x: abs(x[1] - value))[0]
 
     data = pd.read_csv(data_path).fillna(' ')
     data.loc[:, GUESTDataset.target_names()] = data[GUESTDataset.target_names()].applymap(mapper)

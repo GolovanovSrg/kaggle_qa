@@ -5,9 +5,9 @@ import torch
 
 from model.text import GPT2Tokenizer, BPEVocab
 from model.gpt2_utils import MODEL_INFO, prepare_gpt2_weights, prepare_bpe_vocab, prepare_bpe_codes, load_gpt2_weights
-from cls_model import ClassificationModel
-from trainer import Trainer
-from dataset import SPECIAL_TOKENS, GUESTDataset, read_data
+from .cls_model import ClassificationModel
+from .trainer import Trainer
+from .dataset import SPECIAL_TOKENS, GUESTDataset, read_data
 
 
 def set_seed(seed=0):
@@ -21,8 +21,8 @@ def get_vocab(config):
     model_type = config['model_type']
     vocab_dir = config['vocab_dir']
 
-    vocab_path = os.path.join(vocab_dir, '_gpt2_bpe.vocab')
-    codes_path = os.path.join(vocab_dir, '_gpt2_bpe.codes')
+    vocab_path = os.path.join(vocab_dir, 'gpt2_bpe.vocab')
+    codes_path = os.path.join(vocab_dir, 'gpt2_bpe.codes')
 
     prepare_bpe_vocab(vocab_path, model_type)
     prepare_bpe_codes(codes_path, model_type)
@@ -40,8 +40,8 @@ def get_model(config, vocab):
     if config['n_pos_embeddings'] is None:
         config['n_pos_embeddings'] = model_config['n_pos_embeddings']
 
-    model = ClassificationModel(n_outputs=config['n_outputs'],
-                                n_classes=config['n_classes'],
+    model = ClassificationModel(n_outputs=len(GUESTDataset.target_names()),
+                                n_classes=len(GUESTDataset.assessor_values()),
                                 cls_embedding_dim=config['cls_embedding_dim'],
                                 n_centers=config['n_centers'],
                                 n_layers=model_config['n_layers'],

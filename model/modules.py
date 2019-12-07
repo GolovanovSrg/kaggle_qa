@@ -242,8 +242,8 @@ class TransformerBlock(nn.Module):
         self.ff_dropout = nn.Dropout(dropout)
 
         if adapters_mode:
-            self.attn_adapter = Adapter(n_features, n_features)
-            self.ff_adapter = Adapter(n_features, n_features)
+            self.attn_adapter = Adapter(n_features, n_features // 4)
+            self.ff_adapter = Adapter(n_features, n_features // 4)
         else:
             self.attn_adapter = None
             self.ff_adapter = None
@@ -333,10 +333,10 @@ class DistanceLayer(nn.Module):
             middle_feature = in_features
 
         self.proj = nn.Sequential(nn.Linear(in_features, middle_feature),
-                                  nn.BatchNorm1d(middle_feature),
+                                  LayerNorm(middle_feature),
                                   nn.CELU(inplace=True),
                                   nn.Linear(middle_feature, middle_feature),
-                                  nn.BatchNorm1d(middle_feature))
+                                  LayerNorm(middle_feature))
         self.clusters = nn.Parameter(torch.Tensor(n_centers * out_features, middle_feature))
         self.pooling = nn.MaxPool1d(kernel_size=n_centers, stride=n_centers)
         self.register_buffer('scale', torch.tensor(math.sqrt(2) * math.log(out_features - 1)))

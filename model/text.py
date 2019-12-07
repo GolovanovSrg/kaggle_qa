@@ -79,8 +79,7 @@ class BPEVocab:
 
     def __init__(self, vocab, codes, tokenizer, special_tokens):
         assert isinstance(special_tokens, dict)  # token_name + token
-
-        filtered_special_tokens = [t for t in special_tokens if t not in vocab]
+        filtered_special_tokens = [t for t in special_tokens.values() if t not in vocab]
         special_token2id = {t: i for i, t in enumerate(filtered_special_tokens)}
         token2id = {t: i + len(filtered_special_tokens) for t, i in vocab.items()}
         token2id.update(special_token2id)

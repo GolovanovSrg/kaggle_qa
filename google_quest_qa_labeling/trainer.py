@@ -139,7 +139,10 @@ class Trainer:
                 tokens = tokens.to(self.device)
                 labels = labels.to(self.device)
 
-                chunk_vat_loss = self.vat_criterion(self.model, tokens)
+                if self.vat_weight > 0:
+                    chunk_vat_loss = self.vat_criterion(self.model, tokens)
+                else:
+                    chunk_vat_loss = torch.tensor(0, device=self.device)
 
                 cls_logits, lm_logits = self.model(tokens)
 
