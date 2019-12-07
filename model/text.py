@@ -164,11 +164,3 @@ class BPEVocab:
         string = self.tokenizer.detokenize(bpe_tokens)
 
         return string
-
-
-def get_vocab(vocab_path, codes_path, special_tokens=None):
-    tokenizer = GPT2Tokenizer()
-    if special_tokens is None:
-        special_tokens = {'pad': '<pad>', 'eos': '<|endoftext|>'}
-
-    return BPEVocab.from_files(vocab_path, codes_path, tokenizer, special_tokens)
