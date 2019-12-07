@@ -46,8 +46,8 @@ class SpearmanCorrelationMeter:
     def update(self, predictions, targets):
         assert len(predictions) == len(targets)
 
-        predictions /= self._norm_coef
-        targets /= self._norm_coef
+        predictions = predictions / self._norm_coef
+        targets = targets / self._norm_coef
 
         if self._predictions is None and self._targets is None:
             self._predictions = predictions
@@ -60,7 +60,7 @@ class SpearmanCorrelationMeter:
         assert self._predictions is not None and \
             self._targets is not None
 
-        scores = [spearmanr(t, p).correlation for p, t in zip(self._predictions.T, self._targets.T)]
+        scores = [np.nan_to_num(spearmanr(t, p).correlation) for p, t in zip(self._predictions.T, self._targets.T)]
         return np.mean(scores)
 
 
