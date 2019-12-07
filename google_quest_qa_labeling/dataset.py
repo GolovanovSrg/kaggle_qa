@@ -1,6 +1,9 @@
 import random
 
+import pandas as pd
 import torch
+
+from skmultilearn.model_selection import IterativeStratification
 from torch.utils.data import Dataset
 
 
@@ -82,11 +85,8 @@ class GUESTDataset(Dataset):
 
         return tokens
 
-    def _make_target(self, name, idx, eps=1e-8):
-        value = float(self._data.iloc[idx][name])
-        for i, assessor_value in enumerate(self.assessor_values()):
-            if abs(assessor_value - value) <= eps:
-                return i
+    def _make_target(self, name, idx):
+        return self._data.iloc[idx][name]
 
     def __len__(self):
         return len(self.data)
@@ -107,3 +107,28 @@ class GUESTDataset(Dataset):
         targets = torch.tensor(targets, dtype=torch.long)
 
         return tokens, targets
+
+
+def read_data(data_path, test_size=0, seed=0):
+    def mapper(value, eps=1e-8):
+        for i, assessor_value in enumerate(GUESTDataset.assessor_values()):
+            if abs(assessor_value - value) <= eps:
+                return i
+
+    data = pd.read_csv(data_path).fillna(' ')
+    data.loc[:, GUESTDataset.target_names()] = data[GUESTDataset.target_names()].applymap(mapper)
+
+    if test_size == 0:
+        return data
+
+    stratifier = IterativeStratification(n_splits=2,
+                                         order=2,
+                                         sample_distribution_per_fold=[test_size, 1.0 - test_size],
+                                         random_state=seed)
+    train_indexes, test_indexes = next(stratifier.split(data, data.loc[:, GUESTDataset.target_names()]))
+    train_data = data.iloc[train_indexes, :].reset_index(drop=True)
+    test_data = data.iloc[test_indexes, :].reset_index(drop=True)
+
+    print(f'Train data size: {len(train_data)}\nTest data size: {len(test_data)}')
+
+    return train_data, test_data
