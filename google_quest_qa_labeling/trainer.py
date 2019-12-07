@@ -1,8 +1,10 @@
 import os
 
+import numpy as np
 import torch
 from apex import amp, optimizers
 from tqdm import tqdm
+from scipy.stats import spearmanr
 from torch.optim.lr_scheduler import LambdaLR
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
@@ -31,6 +33,37 @@ class AvgMeter:
         return 0
 
 
+class SpearmanCorrelationMeter:
+    def __init__(self, norm_coef):
+        self._norm_coef = norm_coef
+        self._predictions = None
+        self._targets = None
+
+    def reset(self):
+        self._predictions = None
+        self._targets = None
+
+    def update(self, predictions, targets):
+        assert len(predictions) == len(targets)
+
+        predictions /= self._norm_coef
+        targets /= self._norm_coef
+
+        if self._predictions is None and self._targets is None:
+            self._predictions = predictions
+            self._targets = targets
+        else:
+            self._predictions = np.concatenate([self._predictions, predictions], axis=0)
+            self._targets = np.concatenate([self._targets, targets], axis=0)
+
+    def __call__(self):
+        assert self._predictions is not None and \
+            self._targets is not None
+
+        scores = [spearmanr(t, p).correlation for p, t in zip(self._predictions.T, self._targets.T)]
+        return np.mean(scores)
+
+
 def chunks(sequences, chunk_size):
     return [sequences[i:i + chunk_size] for i in range(0, len(sequences), chunk_size)]
 
@@ -53,7 +86,7 @@ class Trainer:
         swa_start = optimizer_params.get('swa_start', None)
         swa_freq = optimizer_params.get('swa_freq', None)
         swa_lr = optimizer_params.get('swa_lr', None)
-        warmap = optimizer_params.get('warmap', 1000)
+        warmup = optimizer_params.get('warmup', 1000)
         opt_level = amp_params.get('opt_level', 'O0')
         loss_scale = amp_params.get('loss_scale', None)
 
@@ -79,8 +112,8 @@ class Trainer:
         self.model, self.optimizer = amp.initialize(self.model, self.optimizer, opt_level=opt_level, loss_scale=loss_scale)
 
         def scheduler_func(iteration):
-            if iteration <= warmap:
-                return iteration / warmap
+            if iteration <= warmup:
+                return iteration / warmup
             return max(1 - lr_decay * iteration, 1e-9)
 
         self.swa = swa
@@ -146,7 +179,7 @@ class Trainer:
         tqdm_test_dataloader = tqdm(test_dataloader, desc=f'Test, epoch #{self.last_epoch}')
         self.model.eval()
 
-        cls_loss, lm_loss, entropy = AvgMeter(), AvgMeter(), AvgMeter()
+        cls_loss, lm_loss, entropy, corr = AvgMeter(), AvgMeter(), AvgMeter(), SpearmanCorrelationMeter(self.model.n_classes-1)
         for chunks_list in tqdm_test_dataloader:
             for tokens, labels in chunks_list:
                 tokens = tokens.to(self.device)
@@ -154,6 +187,7 @@ class Trainer:
 
                 cls_logits, lm_logits = self.model(tokens)
 
+                preds = self.model.predict_from_logits(cls_logits)
                 chunk_cls_loss = self.criterion(self.model, cls_logits.reshape(-1, cls_logits.shape[-1]), labels.reshape(-1))
                 chunk_lm_loss = self.lm_criterion(lm_logits[:, :-1].reshape(-1, lm_logits.shape[-1]), tokens[:, 1:].reshape(-1))
                 chunk_entropy = entropy_with_logits(cls_logits)
@@ -161,16 +195,19 @@ class Trainer:
                 cls_loss.update(chunk_cls_loss.item())
                 lm_loss.update(chunk_lm_loss.item())
                 entropy.update(chunk_entropy.item())
+                corr.update(preds.cpu().numpy(), labels.cpu().numpy())
 
             tqdm_test_dataloader.set_postfix({'cls_loss': cls_loss(),
                                               'lm_loss': lm_loss(),
-                                              'entropy': entropy()})
+                                              'entropy': entropy(),
+                                              'corr': corr()})
 
         self.writer.add_scalar('test/cls_loss', cls_loss(), global_step=self.last_epoch)
         self.writer.add_scalar('test/lm_loss', lm_loss(), global_step=self.last_epoch)
         self.writer.add_scalar('test/entropy', entropy(), global_step=self.last_epoch)
+        self.writer.add_scalar('test/corr', corr(), global_step=self.last_epoch)
 
-        result_metric = -cls_loss()
+        result_metric = corr()
 
         return result_metric
 
