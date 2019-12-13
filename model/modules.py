@@ -5,6 +5,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
+from entmax import entmax15
+
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
@@ -95,6 +97,7 @@ class CombinedEmbedding(nn.Module):
 
 class MultiheadAttention(nn.Module):
     @classmethod
+    @torch.no_grad()
     def _get_future_mask(cls, size, device):
         if not hasattr(cls, '_future_mask') or cls._future_mask.device != device or cls._future_mask.shape < size:
             cls._future_mask = torch.triu(torch.ones(size[0], size[1], dtype=torch.uint8, device=device), 1).bool()
@@ -102,14 +105,16 @@ class MultiheadAttention(nn.Module):
 
         return mask
 
-    def __init__(self, n_features, n_heads, dropout, future_mask=True):
+    def __init__(self, n_features, n_heads, dropout, future_mask=True, efficient_attn=False):
         super().__init__()
 
         assert n_features % n_heads == 0
 
         self.n_features = n_features
         self.n_heads = n_heads
-        self.future_mask = torch.tensor(future_mask)
+        self.future_mask = future_mask
+        self.efficient_attn = efficient_attn
+        self.alphas = nn.Parameter(torch.tensor([[[[1.0]] for _ in range(n_heads)]]))
         self.qkv_proj = nn.Linear(n_features, 3 * n_features)
         self.out_proj = nn.Linear(n_features, n_features)
         self.dropout = nn.Dropout(dropout)
@@ -126,17 +131,34 @@ class MultiheadAttention(nn.Module):
 
         return x
 
+    def _efficient_attn(self, q, k, v, apply_future_mask, padding_mask):
+        if apply_future_mask:
+            raise ValueError('Efficient attention does not support future mask')
+
+        if padding_mask is not None:
+            k.masked_fill_(padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+
+        k = entmax15(k, dim=-1)
+        k = self.dropout(k)
+        g = torch.matmul(k, v)
+
+        q = entmax15(q, dim=-1)
+        q = self.dropout(q)
+        out = torch.matmul(q, g)
+
+        return out
+
     def _attn(self, q, k, v, apply_future_mask, padding_mask):
         w = torch.matmul(q, k) / math.sqrt(self.n_features // self.n_heads)
 
-        if apply_future_mask.item():
+        if apply_future_mask:
             future_mask = MultiheadAttention._get_future_mask(w.shape[-2:], w.device).unsqueeze(0).unsqueeze(0)
             w.masked_fill_(future_mask, float('-inf'))
 
         if padding_mask is not None:
             w.masked_fill_(padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
 
-        w = F.softmax(w, dim=-1)
+        w = entmax15(w, dim=-1)
         w = self.dropout(w)
 
         out = torch.matmul(w, v)
@@ -150,13 +172,31 @@ class MultiheadAttention(nn.Module):
         return x
 
     def forward(self, query, key, value, padding_mask):
-        query, key, value = self.qkv_proj(query).split(self.n_features, dim=-1)
+        qkv_same = (query.data_ptr() == key.data_ptr() == value.data_ptr())
+        kv_same = (key.data_ptr() == value.data_ptr())
+
+        if qkv_same:
+            query, key, value = self.qkv_proj(query).split(self.n_features, dim=-1)
+            apply_future_mask = self.future_mask
+        elif kv_same:
+            q_w, q_b = self.qkv_proj.weight[:self.n_features, :], self.qkv_proj.bias[:self.n_features]
+            kv_w, kv_b = self.qkv_proj.weight[self.n_features:, :], self.qkv_proj.bias[self.n_features:]
+
+            query = F.linear(query, q_w, q_b)
+            key, value = F.linear(key, kv_w, kv_b).split(self.n_features, dim=-1)
+            apply_future_mask = False
+        else:
+            assert False
 
         query = self._split_heads(query)
         key = self._split_heads(key, is_key=True)
         value = self._split_heads(value)
 
-        x = self._attn(query, key, value, self.future_mask, padding_mask)            
+        if self.efficient_attn:
+            x = self._efficient_attn(query, key, value, apply_future_mask, padding_mask)
+        else:
+            x = self._attn(query, key, value, apply_future_mask, padding_mask)
+
         x = self._merge_heads(x)
 
         x = self.out_proj(x)
@@ -242,23 +282,31 @@ class TransformerBlock(nn.Module):
         self.ff_dropout = nn.Dropout(dropout)
 
         if adapters_mode:
-            self.attn_adapter = Adapter(n_features, n_features // 4)
-            self.ff_adapter = Adapter(n_features, n_features // 4)
+            self.attn_adapter = Adapter(n_features, n_features)
+            self.ff_adapter = Adapter(n_features, n_features)
         else:
             self.attn_adapter = None
             self.ff_adapter = None
 
-    def _process_attn(self, x, padding_mask):
+    def _process_attn(self, x, padding_mask, contexts):
+        # TODO: don't share attention, try not sum
+    
+        if contexts is None:
+            contexts = []
+
         residual = x
 
         x = self.attn_norm(x)
+        ext_contexts = [(x, padding_mask)] + contexts
         if self.attn_adapter is not None:
             with torch.no_grad():
-                x = self.attn(x, x, x, padding_mask)
+                attns = (self.attn(x, c, c, m) for c, m in ext_contexts)
+                x = sum(attns, 0) / len(ext_contexts)
                 x = self.attn_dropout(x)
             x = self.attn_adapter(x)
         else:
-            x = self.attn(x, x, x, padding_mask)
+            attns = (self.attn(x, c, c, m) for c, m in ext_contexts)
+            x = sum(attns, 0) / len(ext_contexts)
             x = self.attn_dropout(x)
 
         x = residual + x
@@ -282,8 +330,11 @@ class TransformerBlock(nn.Module):
 
         return x
 
-    def forward(self, x, padding_mask):
-        x = self._process_attn(x, padding_mask)
+    def forward(self, x, padding_mask, contexts=None):
+        '''
+        contexts = [(context1, padding_mask1), ...]
+        '''
+        x = self._process_attn(x, padding_mask, contexts)
         x = self._process_ff(x)
 
         return x, padding_mask
@@ -312,14 +363,14 @@ class Transformer(nn.Module):
         self.layers = nn.ModuleList([copy.deepcopy(base_block) for _ in range(n_layers)])
         self.final_norm = LayerNorm(embedding_dim)
 
-    def forward(self, x, emb_noise=None):
+    def forward(self, x, emb_noise=None, contexts=None):
         x, padding_mask = self.embedding(x)
         if emb_noise is not None:
             x = x + emb_noise
         x = self.embedding_dropout(x)
 
         for layer in self.layers:
-            x, _ = layer(x, padding_mask)
+            x, _ = layer(x, padding_mask, contexts=contexts)
         x = self.final_norm(x)
 
         return x, padding_mask
@@ -333,10 +384,8 @@ class DistanceLayer(nn.Module):
             middle_feature = in_features
 
         self.proj = nn.Sequential(nn.Linear(in_features, middle_feature),
-                                  LayerNorm(middle_feature),
                                   nn.CELU(inplace=True),
-                                  nn.Linear(middle_feature, middle_feature),
-                                  LayerNorm(middle_feature))
+                                  nn.Linear(middle_feature, middle_feature))
         self.clusters = nn.Parameter(torch.Tensor(n_centers * out_features, middle_feature))
         self.pooling = nn.MaxPool1d(kernel_size=n_centers, stride=n_centers)
         self.register_buffer('scale', torch.tensor(math.sqrt(2) * math.log(out_features - 1)))
@@ -345,7 +394,7 @@ class DistanceLayer(nn.Module):
 
     def _init_weights(self):
         nn.init.normal_(self.proj[0].weight, std=0.02)
-        nn.init.normal_(self.proj[3].weight, std=0.02)
+        nn.init.normal_(self.proj[2].weight, std=0.02)
         nn.init.normal_(self.clusters)
 
     def forward(self, x):
