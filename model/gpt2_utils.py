@@ -152,8 +152,9 @@ def load_gpt2_weights(gpt_model, state, n_special_tokens=0):
             xx = np.linspace(0, state['pos_embedding'].shape[0], gpt_model.embedding.pos_embedding.num_embeddings - 1)
             new_kernel = RectBivariateSpline(np.arange(state['pos_embedding'].shape[0]),
                                              np.arange(state['pos_embedding'].shape[1]),
-                                             state['pos_embedding'])
+                                             state['pos_embedding'].numpy())
             state['pos_embedding'] = new_kernel(xx, np.arange(state['pos_embedding'].shape[1]))
+            state['pos_embedding'] = torch.from_numpy(state['pos_embedding'])
 
         state['pos_embedding'] = state['pos_embedding'][:gpt_model.embedding.pos_embedding.num_embeddings - 1]
         gpt_model.embedding.pos_embedding.weight.data[1:] = state['pos_embedding']
