@@ -109,7 +109,7 @@ def get_train_val_datasets(config, vocab, max_positions):
                                  max_positions=max_positions)
     val_dataset = GUESTDataset(data=val_data,
                                vocab=vocab,
-                               bpe_dropout=config['bpe_dropout'],
+                               bpe_dropout=0,
                                shuffle_parts=False,
                                max_positions=max_positions)
 

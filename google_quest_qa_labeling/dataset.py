@@ -88,19 +88,42 @@ class GUESTDataset(Dataset):
     def _make_target(self, name, idx):
         return self._data.iloc[idx][name]
 
+    def _trim(self, title, question, answer):
+        t_len = len(title)
+        q_len = len(question)
+        a_len = len(answer)
+
+        if (t_len + q_len + a_len) > self._max_positions - 1:
+            q_max_len = (self._max_positions - 1 - t_len) // 2
+            a_max_len = self._max_positions - 1 - t_len - q_max_len
+
+            if a_max_len > a_len:
+                a_new_len = a_len 
+                q_new_len = q_max_len + (a_max_len - a_len)
+            elif q_max_len > q_len:
+                a_new_len = a_max_len + (q_max_len - q_len)
+                q_new_len = q_len
+            else:
+                a_new_len = a_max_len
+                q_new_len = q_max_len
+            
+            question = question[:q_new_len-1] + [question[-1]]
+            answer = answer[:a_new_len-1] + [answer[-1]]
+        
+        return title, question, answer
+
     def __len__(self):
         return len(self._data)
 
     def __getitem__(self, idx):
-        features = [self._make_feature(name, idx) for name in self.feature_names()]
+        title, question, answer = [self._make_feature(name, idx) for name in self.feature_names()]
+        title, question, answer = self._trim(title, question, answer)
+
+        features = [title, question, answer]
         if self._shuffle_parts:
             random.shuffle(features)
 
-        tokens = sum(features, [])
-        #if len(tokens) >= self._max_positions:
-        #    print(f'Trimmed input with length {len(tokens)}')
-
-        tokens = tokens[:self._max_positions - 1] + [self._vocab.eos_id]
+        tokens = sum(features, []) + [self._vocab.eos_id]
         targets = [self._make_target(name, idx) for name in self.target_names()]
 
         tokens = torch.tensor(tokens, dtype=torch.long)
@@ -110,11 +133,17 @@ class GUESTDataset(Dataset):
 
 
 def read_data(data_path, test_size=0, seed=0):
-    def mapper(value):
+    def target_mapper(value):
         return min(GUESTDataset.assessor_values(), key=lambda x: abs(x[1] - value))[0]
 
+    def feature_mapper(string):
+        string = ' '.join(string.split(' '))
+        string = '\n'.join(string.split('\n'))
+        return string
+
     data = pd.read_csv(data_path).fillna(' ')
-    data.loc[:, GUESTDataset.target_names()] = data[GUESTDataset.target_names()].applymap(mapper)
+    data.loc[:, GUESTDataset.target_names()] = data[GUESTDataset.target_names()].applymap(target_mapper)
+    data.loc[:, GUESTDataset.feature_names()] = data[GUESTDataset.feature_names()].applymap(feature_mapper)
 
     if test_size == 0:
         return data
