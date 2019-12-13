@@ -41,7 +41,8 @@ class ClassificationModel(nn.Module):
                                    future_mask=future_mask,
                                    adapters_mode=adapters_mode)
 
-        self.proj = nn.Linear(embedding_dim, n_outputs * cls_embedding_dim)
+        self.proj = nn.Sequential(nn.Linear(embedding_dim, n_outputs * cls_embedding_dim),
+                                  nn.CELU(inplace=True))
         # TODO: don't share classes
         self.dist = DistanceLayer(cls_embedding_dim, n_classes,
                                   middle_feature=cls_embedding_dim,
@@ -82,13 +83,16 @@ class ClassificationModel(nn.Module):
         logits, _ = self.forward(x)
         return self.predict_from_logits(logits)
 
-    def forward(self, x, emb_noise=0):
+    def forward(self, x, emb_noise=0, lm_out=False):
         x, padding_mask = self.encoder(x, emb_noise)
         lengths = (~padding_mask).long().sum(dim=-1)
         lengths = lengths.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[-1])
         cls_x = x.gather(1, lengths-1).squeeze(1)
         cls_x = self.proj(cls_x).reshape(-1, self.n_outputs, self.cls_embedding_dim)
         cls_output = self.dist(cls_x)
+        if not lm_out:
+            return cls_output
+
         lm_output = F.linear(x, self.encoder.embedding.tok_embedding.weight)
 
         return cls_output, lm_output

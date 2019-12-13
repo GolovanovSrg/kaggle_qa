@@ -139,15 +139,19 @@ class Trainer:
                 tokens = tokens.to(self.device)
                 labels = labels.to(self.device)
 
-                if self.vat_weight > 0:
+                if self.vat_weight != 0:
                     chunk_vat_loss = self.vat_criterion(self.model, tokens)
                 else:
                     chunk_vat_loss = torch.tensor(0, device=self.device)
 
-                cls_logits, lm_logits = self.model(tokens)
+                cls_logits, lm_logits = self.model(tokens, lm_out=True)
+
+                if self.lm_weight != 0:
+                    chunk_lm_loss = self.lm_criterion(lm_logits[:, :-1].reshape(-1, lm_logits.shape[-1]), tokens[:, 1:].reshape(-1))
+                else:
+                    chunk_lm_loss = torch.tensor(0, device=self.device)
 
                 chunk_cls_loss = self.criterion(self.model, cls_logits.reshape(-1, cls_logits.shape[-1]), labels.reshape(-1))
-                chunk_lm_loss = self.lm_criterion(lm_logits[:, :-1].reshape(-1, lm_logits.shape[-1]), tokens[:, 1:].reshape(-1))
                 chunk_entropy = entropy_with_logits(cls_logits)
                 full_loss = (self.vat_weight * chunk_vat_loss +
                              self.cls_weight * chunk_cls_loss +
@@ -188,7 +192,7 @@ class Trainer:
                 tokens = tokens.to(self.device)
                 labels = labels.to(self.device)
 
-                cls_logits, lm_logits = self.model(tokens)
+                cls_logits, lm_logits = self.model(tokens, lm_out=True)
 
                 preds = self.model.predict_from_logits(cls_logits)
                 chunk_cls_loss = self.criterion(self.model, cls_logits.reshape(-1, cls_logits.shape[-1]), labels.reshape(-1))

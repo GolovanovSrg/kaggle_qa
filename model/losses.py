@@ -5,9 +5,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
-# TODO: try softmax instead sigsoftmax
-
-
 def sigsoftmax(logits):
     max_values = torch.max(logits, -1, keepdim=True)[0]
     exp_logits_sigmoided = torch.exp(logits - max_values) * torch.sigmoid(logits)
@@ -172,7 +169,7 @@ class VATLoss(nn.Module):
         FrozenDropout.freeze_dropout(model, True)
 
         with torch.no_grad():
-            logits, _ = model(x)
+            logits = model(x)
             mask = 1 - x.eq(model.padding_idx).unsqueeze(-1).float()
 
         d = torch.randn(*x.shape, model.embedding_dim, device=x.device)
@@ -180,12 +177,12 @@ class VATLoss(nn.Module):
 
         for _ in range(self.n_iter):
             d.requires_grad_()
-            pred_hat, _ = model(x, self.eps * d)
+            pred_hat = model(x, self.eps * d)
             adv_distance = cross_entropy_with_logits(pred_hat, logits)
             grad = torch.autograd.grad(adv_distance, [d], retain_graph=True)[0]
             d = self._l2_normalize(grad.detach() * mask)
 
-        pred_hat, _ = model(x, self.eps * d)
+        pred_hat = model(x, self.eps * d)
         loss = cross_entropy_with_logits(pred_hat, logits)
 
         FrozenDropout.freeze_dropout(model, False)
