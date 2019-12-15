@@ -6,15 +6,12 @@ from model.modules import Transformer, DistanceLayer
 
 
 class ClassificationModel(nn.Module):
-    def __init__(self, n_outputs, n_classes, cls_embedding_dim, n_centers, n_layers, n_embeddings,
-                 n_pos_embeddings, embedding_dim, n_heads, padding_idx, dropout=0, future_mask=True,
+    def __init__(self, n_outputs, n_layers, n_embeddings,n_pos_embeddings, embedding_dim,
+                 n_heads, padding_idx, dropout=0, future_mask=True,
                  constant_pos_embedding=False, adapters_mode=False):
         super().__init__()
 
         self.n_outputs = n_outputs
-        self.n_classes = n_classes
-        self.cls_embedding_dim = cls_embedding_dim
-        self.n_centers = n_centers
         self.n_layers = n_layers
         self.n_embeddings = n_embeddings
         self.n_pos_embeddings = n_pos_embeddings
@@ -41,12 +38,7 @@ class ClassificationModel(nn.Module):
                                    future_mask=future_mask,
                                    adapters_mode=adapters_mode)
 
-        self.proj = nn.Sequential(nn.Linear(embedding_dim, n_outputs * cls_embedding_dim),
-                                  nn.CELU(inplace=True))
-        # TODO: don't share classes
-        self.dist = DistanceLayer(cls_embedding_dim, n_classes,
-                                  middle_feature=cls_embedding_dim,
-                                  n_centers=n_centers)
+        self.proj = nn.Linear(embedding_dim, n_outputs)
 
     def named_parameters(self, *args, **kwargs):
         named_params = super().named_parameters(*args, **kwargs)
@@ -57,27 +49,18 @@ class ClassificationModel(nn.Module):
         for name, param in named_params:
             if 'adapter' in name or \
                'norm' in name or \
-               'proj' in name or \
-               'dist' in name:
+               'proj' in name:
                 adapter_params.append((name, param))
             else:
                 param.requires_grad_(False)
 
         return adapter_params
 
-    @property
-    def scale(self):
-        return self.dist.scale
-
-    @scale.setter
-    def scale(self, x):
-        self.dist.scale = x
-
     def parameters(self, *args, **kwargs):
         return (param for _, param in self.named_parameters(*args, **kwargs))
 
     def predict_from_logits(self, logits):
-        return torch.argmax(logits, dim=-1)
+        return torch.sigmoid(logits)
 
     def predict(self, x):
         logits, _ = self.forward(x)
@@ -88,8 +71,7 @@ class ClassificationModel(nn.Module):
         lengths = (~padding_mask).long().sum(dim=-1)
         lengths = lengths.unsqueeze(-1).unsqueeze(-1).expand(-1, -1, x.shape[-1])
         cls_x = x.gather(1, lengths-1).squeeze(1)
-        cls_x = self.proj(cls_x).reshape(-1, self.n_outputs, self.cls_embedding_dim)
-        cls_output = self.dist(cls_x)
+        cls_output = self.proj(cls_x)
         if not lm_out:
             return cls_output
 

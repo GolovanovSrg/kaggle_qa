@@ -84,22 +84,6 @@ class AdaCosLoss(nn.Module):
         return loss
 
 
-def entropy_with_logits(logits):
-    probs = sigsoftmax(logits)
-    log_probs = log_sigsoftmax(logits)
-    entropy = -(probs * log_probs).sum(dim=-1).mean()
-
-    return entropy
-
-
-def cross_entropy_with_logits(pred_logits, target_logits):
-    target_probs = sigsoftmax(target_logits)
-    pred_log_probs = log_sigsoftmax(pred_logits)
-    cross_entropy = -(target_probs * pred_log_probs).sum(dim=-1).mean()
-
-    return cross_entropy
-
-
 class FrozenDropout(nn.Module):
     @staticmethod
     def freeze_dropout(model, freeze_flag):
@@ -170,6 +154,7 @@ class VATLoss(nn.Module):
 
         with torch.no_grad():
             logits = model(x)
+            probs = torch.sigmoid(logits)
             mask = 1 - x.eq(model.padding_idx).unsqueeze(-1).float()
 
         d = torch.randn(*x.shape, model.embedding_dim, device=x.device)
@@ -177,13 +162,13 @@ class VATLoss(nn.Module):
 
         for _ in range(self.n_iter):
             d.requires_grad_()
-            pred_hat = model(x, self.eps * d)
-            adv_distance = cross_entropy_with_logits(pred_hat, logits)
+            adv_logits = model(x, self.eps * d)
+            adv_distance = F.binary_cross_entropy_with_logits(adv_logits, probs)
             grad = torch.autograd.grad(adv_distance, [d], retain_graph=True)[0]
             d = self._l2_normalize(grad.detach() * mask)
 
-        pred_hat = model(x, self.eps * d)
-        loss = cross_entropy_with_logits(pred_hat, logits)
+        adv_logits = model(x, self.eps * d)
+        loss = F.binary_cross_entropy_with_logits(adv_logits, probs)
 
         FrozenDropout.freeze_dropout(model, False)
 

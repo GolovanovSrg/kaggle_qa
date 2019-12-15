@@ -41,9 +41,6 @@ def get_model(config, vocab):
         config['n_pos_embeddings'] = model_config['n_pos_embeddings']
 
     model = ClassificationModel(n_outputs=len(GUESTDataset.target_names()),
-                                n_classes=len(GUESTDataset.assessor_values()),
-                                cls_embedding_dim=config['cls_embedding_dim'],
-                                n_centers=config['n_centers'],
                                 n_layers=model_config['n_layers'],
                                 n_embeddings=len(vocab),
                                 n_pos_embeddings=config['n_pos_embeddings'],

@@ -19,10 +19,6 @@ SPECIAL_TOKENS = {'pad': '<pad>',
 
 class GUESTDataset(Dataset):
     @staticmethod
-    def assessor_values(n_bins=19):
-        return [(i, i / (n_bins-1)) for i in range(n_bins)]
-
-    @staticmethod
     def feature_names():
         return ['question_title',
                 'question_body',
@@ -127,22 +123,18 @@ class GUESTDataset(Dataset):
         targets = [self._make_target(name, idx) for name in self.target_names()]
 
         tokens = torch.tensor(tokens, dtype=torch.long)
-        targets = torch.tensor(targets, dtype=torch.long)
+        targets = torch.tensor(targets, dtype=torch.float)
 
         return tokens, targets
 
 
 def read_data(data_path, test_size=0, seed=0):
-    def target_mapper(value):
-        return min(GUESTDataset.assessor_values(), key=lambda x: abs(x[1] - value))[0]
-
     def feature_mapper(string):
         string = ' '.join(string.split(' '))
         string = '\n'.join(string.split('\n'))
         return string
 
     data = pd.read_csv(data_path).fillna(' ')
-    data.loc[:, GUESTDataset.target_names()] = data[GUESTDataset.target_names()].applymap(target_mapper)
     data.loc[:, GUESTDataset.feature_names()] = data[GUESTDataset.feature_names()].applymap(feature_mapper)
 
     if test_size == 0:
