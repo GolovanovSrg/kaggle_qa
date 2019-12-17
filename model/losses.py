@@ -22,6 +22,20 @@ def log_sigsoftmax(logits):
     return log_probs
 
 
+class CrossEntropyLoss(nn.Module):
+    def __init__(self, reduction='mean'):
+        super().__init__()
+        self.reduction = reduction
+    
+    def forward(self, log_probs, target_probs):
+        cross_entropy = -(target_probs * log_probs).sum(dim=-1)
+        if self.reduction == 'mean':
+            return cross_entropy.mean()
+        if self.reduction == 'sum':
+            return cross_entropy.sum()
+        return cross_entropy
+        
+
 class LabelSmoothingLoss(nn.Module):
     def __init__(self, n_labels, smoothing=0.0, ignore_index=-100, reduction='mean'):
         super().__init__()
@@ -31,9 +45,7 @@ class LabelSmoothingLoss(nn.Module):
         self.confidence = 1 - smoothing
 
         if smoothing > 0:
-            if reduction == 'mean':
-                reduction = 'batchmean'
-            self.criterion = nn.KLDivLoss(reduction=reduction)
+            self.criterion = CrossEntropyLoss(reduction=reduction)
             n_ignore_idxs = 1 + (ignore_index >= 0)
             one_hot = torch.full((1, n_labels), fill_value=(smoothing / (n_labels - n_ignore_idxs)))
             if ignore_index >= 0:
@@ -173,3 +185,10 @@ class VATLoss(nn.Module):
         FrozenDropout.freeze_dropout(model, False)
 
         return loss
+
+
+def binary_entropy_with_logits(logits):
+    probs = torch.sigmoid(logits)
+    entropy = F.binary_cross_entropy_with_logits(logits, probs)
+    
+    return entropy

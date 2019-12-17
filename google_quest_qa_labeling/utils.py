@@ -77,7 +77,8 @@ def get_trainer(config, model):
     loss_params = {'smoothing': config['smoothing'],
                    'lm_weight': config['lm_weight'],
                    'cls_weight': config['cls_weight'],
-                   'vat_weight': config['vat_weight']}
+                   'vat_weight': config['vat_weight'],
+                   'ent_weight': config['ent_weight']}
     amp_params = {'opt_level': config['opt_level'],
                   'loss_scale': config['loss_scale']}
     chunk_size = config['chunk_size']

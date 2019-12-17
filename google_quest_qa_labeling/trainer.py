@@ -11,7 +11,7 @@ from torch.nn.utils.rnn import pad_sequence
 from torch.utils.tensorboard import SummaryWriter
 
 from model.optim import SWA
-from model.losses import LabelSmoothingLoss, VATLoss
+from model.losses import LabelSmoothingLoss, VATLoss, binary_entropy_with_logits
 
 
 class AvgMeter:
@@ -52,12 +52,14 @@ class SpearmanCorrelationMeter:
             self._predictions = np.concatenate([self._predictions, predictions], axis=0)
             self._targets = np.concatenate([self._targets, targets], axis=0)
 
-    def __call__(self):
+    def __call__(self, mean=True):
         assert self._predictions is not None and \
             self._targets is not None
 
         scores = [np.nan_to_num(spearmanr(t, p).correlation) for p, t in zip(self._predictions.T, self._targets.T)]
-        return np.mean(scores)
+        if mean:
+            return np.mean(scores)
+        return scores
 
 
 def chunks(sequences, chunk_size):
@@ -75,6 +77,7 @@ class Trainer:
         lm_weight = loss_params.get('lm_weight', 0)
         cls_weight = loss_params.get('cls_weight', 1)
         vat_weight = loss_params.get('vat_weight', 0)
+        ent_weight = loss_params.get('ent_weight', 0)
         lr = optimizer_params.get('lr', 1e-3)
         lr_decay = optimizer_params.get('lr_decay', 0)
         weight_decay = optimizer_params.get('weight_decay', 0)
@@ -118,6 +121,7 @@ class Trainer:
         self.lm_weight = lm_weight
         self.cls_weight = cls_weight
         self.vat_weight = vat_weight
+        self.ent_weight = ent_weight
         self.last_epoch = 0
         self.chunk_size = chunk_size
         self.device = device
@@ -127,7 +131,7 @@ class Trainer:
         tqdm_train_dataloader = tqdm(train_dataloader, desc=f'Train, epoch #{self.last_epoch}')
         self.model.train()
 
-        cls_loss, lm_loss, vat_loss = AvgMeter(), AvgMeter(), AvgMeter()
+        cls_loss, lm_loss, vat_loss, entropy = AvgMeter(), AvgMeter(), AvgMeter(), AvgMeter()
         for chunks_list in tqdm_train_dataloader:
             self.optimizer.zero_grad()
 
@@ -149,9 +153,11 @@ class Trainer:
                     chunk_lm_loss = torch.tensor(0, device=self.device)
 
                 chunk_cls_loss = self.criterion(cls_logits, labels)
+                chunk_entropy = binary_entropy_with_logits(cls_logits)
                 full_loss = (self.vat_weight * chunk_vat_loss +
                              self.cls_weight * chunk_cls_loss +
-                             self.lm_weight * chunk_lm_loss) / len(chunks_list)
+                             self.lm_weight * chunk_lm_loss +
+                             self.ent_weight * chunk_entropy) / len(chunks_list)
 
                 with amp.scale_loss(full_loss, self.optimizer) as scaled_loss:
                     scaled_loss.backward()
@@ -159,13 +165,15 @@ class Trainer:
                 cls_loss.update(chunk_cls_loss.mean().item())
                 lm_loss.update(chunk_lm_loss.item())
                 vat_loss.update(chunk_vat_loss.item())
+                entropy.update(chunk_entropy.item())
 
             self.optimizer.step()
             self.scheduler.step()
 
             tqdm_train_dataloader.set_postfix({'cls_loss': cls_loss(),
                                                'lm_loss': lm_loss(),
-                                               'vat_loss': vat_loss()})
+                                               'vat_loss': vat_loss(),
+                                               'entropy': entropy()})
 
         if self.swa:
             self.optimizer.swap_swa_sgd()
@@ -173,13 +181,14 @@ class Trainer:
         self.writer.add_scalar('train/cls_loss', cls_loss(), global_step=self.last_epoch)
         self.writer.add_scalar('train/lm_loss', lm_loss(), global_step=self.last_epoch)
         self.writer.add_scalar('train/vat_loss', vat_loss(), global_step=self.last_epoch)
+        self.writer.add_scalar('train/entropy', entropy(), global_step=self.last_epoch)
 
     @torch.no_grad()
     def _test_epoch(self, test_dataloader):
         tqdm_test_dataloader = tqdm(test_dataloader, desc=f'Test, epoch #{self.last_epoch}')
         self.model.eval()
 
-        cls_loss, lm_loss, corr = AvgMeter(), AvgMeter(), SpearmanCorrelationMeter()
+        cls_loss, lm_loss, entropy, corr = AvgMeter(), AvgMeter(), AvgMeter(), SpearmanCorrelationMeter()
         for chunks_list in tqdm_test_dataloader:
             for tokens, labels in chunks_list:
                 tokens = tokens.to(self.device)
@@ -191,19 +200,25 @@ class Trainer:
                 chunk_cls_loss = self.criterion(cls_logits, labels)
                 chunk_lm_loss = self.lm_criterion(lm_logits[:, :-1].reshape(-1, lm_logits.shape[-1]),
                                                   tokens[:, 1:].reshape(-1))
+                chunk_entropy = binary_entropy_with_logits(cls_logits)
 
 
                 cls_loss.update(chunk_cls_loss.item())
                 lm_loss.update(chunk_lm_loss.item())
+                entropy.update(chunk_entropy.item())
                 corr.update(preds.cpu().numpy(), labels.cpu().numpy())
 
             tqdm_test_dataloader.set_postfix({'cls_loss': cls_loss(),
                                               'lm_loss': lm_loss(),
+                                              'entropy': entropy(),
                                               'corr': corr()})
 
         self.writer.add_scalar('test/cls_loss', cls_loss(), global_step=self.last_epoch)
         self.writer.add_scalar('test/lm_loss', lm_loss(), global_step=self.last_epoch)
+        self.writer.add_scalar('test/entropy', entropy(), global_step=self.last_epoch)
         self.writer.add_scalar('test/corr', corr(), global_step=self.last_epoch)
+        for i, s in enumerate(corr(mean=False)):
+            self.writer.add_scalar(f'test/separate_corr/corr_{i}', s, global_step=self.last_epoch)
 
         result_metric = corr()
 
