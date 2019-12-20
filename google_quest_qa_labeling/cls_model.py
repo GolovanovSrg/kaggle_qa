@@ -32,7 +32,7 @@ class ClassificationModel(nn.Module):
                                    n_heads=n_heads,
                                    dropout=dropout,
                                    embedding_dropout=dropout,
-                                   attn_dropout=dropout,
+                                   attn_dropout=0,  # attention checkpoint
                                    ff_dropout=dropout,
                                    constant_pos_embedding=constant_pos_embedding,
                                    future_mask=future_mask,

@@ -176,7 +176,7 @@ class VATLoss(nn.Module):
             d.requires_grad_()
             adv_logits = model(x, self.eps * d)
             adv_distance = F.binary_cross_entropy_with_logits(adv_logits, probs)
-            grad = torch.autograd.grad(adv_distance, [d], retain_graph=True)[0]
+            grad = torch.autograd.grad(adv_distance, [d], retain_graph=False)[0]
             d = self._l2_normalize(grad.detach() * mask)
 
         adv_logits = model(x, self.eps * d)

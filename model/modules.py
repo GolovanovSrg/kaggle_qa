@@ -5,8 +5,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-from entmax import entmax15
-
+from .checkpoint import CheckpointFunction
 
 try:
     from apex.normalization.fused_layer_norm import FusedLayerNorm as LayerNorm
@@ -114,7 +113,6 @@ class MultiheadAttention(nn.Module):
         self.n_heads = n_heads
         self.future_mask = future_mask
         self.efficient_attn = efficient_attn
-        self.alphas = nn.Parameter(torch.tensor([[[[1.0]] for _ in range(n_heads)]]))
         self.qkv_proj = nn.Linear(n_features, 3 * n_features)
         self.out_proj = nn.Linear(n_features, n_features)
         self.dropout = nn.Dropout(dropout)
@@ -124,6 +122,18 @@ class MultiheadAttention(nn.Module):
     def _init_weights(self):
         nn.init.normal_(self.qkv_proj.weight, std=0.02)
         nn.init.normal_(self.out_proj.weight, std=0.02)
+
+    def _filtered_softmax(self, logits, top_p=0.95):
+        sorted_logits, sorted_indices = torch.sort(logits, dim=-1, descending=True)
+        with torch.no_grad():
+            cumulative_probabilities = torch.cumsum(F.softmax(sorted_logits, dim=-1), dim=-1)
+            mask_to_remove = cumulative_probabilities > top_p
+            mask_to_remove[..., 1:] = mask_to_remove[..., :-1].clone()
+            mask_to_remove[..., 0] = 0
+        sorted_logits.masked_fill_(mask_to_remove, float('-inf'))
+        logits.scatter_(-1, sorted_indices, sorted_logits)
+
+        return F.softmax(logits, dim=-1)
 
     def _split_heads(self, x, is_key=False):
         x = x.view(x.shape[0], x.shape[1], self.n_heads, self.n_features // self.n_heads)
@@ -136,13 +146,13 @@ class MultiheadAttention(nn.Module):
             raise ValueError('Efficient attention does not support future mask')
 
         if padding_mask is not None:
-            k.masked_fill_(padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+            k.masked_fill_(padding_mask.bool().unsqueeze(1).unsqueeze(2), float('-inf'))
 
-        k = entmax15(k, dim=-1)
+        k = F.softmax(k, dim=-1)
         k = self.dropout(k)
         g = torch.matmul(k, v)
 
-        q = entmax15(q, dim=-1)
+        q = F.softmax(q, dim=-1)
         q = self.dropout(q)
         out = torch.matmul(q, g)
 
@@ -156,18 +166,17 @@ class MultiheadAttention(nn.Module):
             w.masked_fill_(future_mask, float('-inf'))
 
         if padding_mask is not None:
-            w.masked_fill_(padding_mask.unsqueeze(1).unsqueeze(2), float('-inf'))
+            w.masked_fill_(padding_mask.bool().unsqueeze(1).unsqueeze(2), float('-inf'))
 
-        w = entmax15(w, dim=-1)
+        w = F.softmax(w, dim=-1)
         w = self.dropout(w)
-
         out = torch.matmul(w, v)
 
         return out
 
     def _merge_heads(self, x):
-        x = x.permute(0, 2, 1, 3).contiguous()
-        x = x.view(x.shape[0], x.shape[1], self.n_features)
+        x = x.permute(0, 2, 1, 3)
+        x = x.reshape(x.shape[0], x.shape[1], self.n_features)
 
         return x
 
@@ -271,9 +280,13 @@ class Adapter(nn.Module):
 
 class TransformerBlock(nn.Module):
     def __init__(self, n_features, n_heads, dropout=0, attn_dropout=0, ff_dropout=0,
-                 future_mask=True, adapters_mode=False):
+                 future_mask=True, adapters_mode=False, attn_checkpoint=True):
         super().__init__()
 
+        if attn_checkpoint:
+            assert attn_dropout == 0
+
+        self.attn_checkpoint = attn_checkpoint
         self.attn = MultiheadAttention(n_features, n_heads, attn_dropout, future_mask)
         self.attn_norm = LayerNorm(n_features)
         self.ff = FeedForward(n_features, 4 * n_features, ff_dropout)
@@ -305,7 +318,10 @@ class TransformerBlock(nn.Module):
                 x = self.attn_dropout(x)
             x = self.attn_adapter(x)
         else:
-            attns = (self.attn(x, c, c, m) for c, m in ext_contexts)
+            if self.training and self.attn_checkpoint:
+                attns = (CheckpointFunction.apply(self.attn, 4, x, c, c, m) for c, m in ext_contexts)
+            else:
+                attns = (self.attn(x, c, c, m) for c, m in ext_contexts)
             x = sum(attns, 0) / len(ext_contexts)
             x = self.attn_dropout(x)
 
@@ -369,8 +385,9 @@ class Transformer(nn.Module):
             x = x + emb_noise
         x = self.embedding_dropout(x)
 
+        float_padding_mask = padding_mask.type_as(x).requires_grad_()
         for layer in self.layers:
-            x, _ = layer(x, padding_mask, contexts=contexts)
+            x, _ = layer(x, float_padding_mask, contexts=contexts)
         x = self.final_norm(x)
 
         return x, padding_mask
